@@ -155,10 +155,10 @@ Installed. Remaining manual steps:
 
   * CNB side: put the same REG_TOKEN in your private secrets repo and set
       REGISTER_URL=https://$DOMAIN/ops/register
-    in the code repo's .cnb.yml (see README, section 4).
+    in the code repo's .cnb.yml (see README, "部署" step 2-3).
 
   * Verify from a client network:
       curl https://$DOMAIN/health
-      curl -H "Authorization: Bearer \$PROXY_KEY" https://$DOMAIN/v1/models
+      ./smoke-test.sh    # BASE_URL=https://$DOMAIN PROXY_KEY=... ./smoke-test.sh
 ----------------------------------------------------------------
 EOF
