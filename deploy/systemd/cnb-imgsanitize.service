@@ -1,0 +1,16 @@
+[Unit]
+Description=CNB AI relay with request image budget
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /opt/cnb-imgre/imgsanitize.py
+Restart=always
+RestartSec=2
+# SIGTERM stops admission; let the main process drain worker threads.
+KillMode=mixed
+TimeoutStopSec=3700
+StandardError=journal
+StandardOutput=journal
+
+[Install]
+WantedBy=multi-user.target

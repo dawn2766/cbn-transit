@@ -1,0 +1,11 @@
+[Unit]
+Description=CNB AI proxy self-registration endpoint
+After=network.target
+
+[Service]
+ExecStart=/usr/bin/python3 /usr/local/bin/cnb-register.py
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

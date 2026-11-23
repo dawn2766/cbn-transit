@@ -1,0 +1,65 @@
+# ---------------------------------------------------------------------------
+# Secrets and machine-specific state.  Nothing below may ever be committed.
+# ---------------------------------------------------------------------------
+
+# Relay secrets (copy the deploy/env/*.example templates and fill them in
+# locally; the filled-in copies must never enter this repository)
+cnb-ai-watchdog.env
+register.env
+proxy.yml
+secrets.yml
+
+# CNB personal access tokens / client keys anywhere in the tree
+*.token
+*api-key*
+.credentials*
+.env
+.env.local
+
+# Live nginx map: contains the current workspace subdomain (an identifier of a
+# running workspace) and is rewritten at every registration.
+cnb-ai-upstream.conf.live
+*.regbak
+*.cnb-run-state
+
+# TLS material
+*.pem
+*.key
+*.crt
+*.csr
+*.p12
+*.pfx
+letsencrypt/
+
+# ---------------------------------------------------------------------------
+# Runtime and build artefacts
+# ---------------------------------------------------------------------------
+__pycache__/
+*.py[cod]
+*.pyo
+.venv/
+venv/
+.python-version
+*.log
+*.log.[0-9]
+/tmp/
+/capture/
+/backups/
+*.pyc.tmp
+.pytest_cache/
+.mypy_cache/
+.coverage
+htmlcov/
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+desktop.ini
+.idea/
+.vscode/
+*.swp
+*~
+
+# Local scratch
+/scratch/
+/notes-private/

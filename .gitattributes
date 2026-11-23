@@ -1,0 +1,14 @@
+* text=auto eol=lf
+
+# Shell and Python stay LF; they run on the Linux relay and must not carry CRLF.
+*.sh   text eol=lf
+*.py   text eol=lf
+*.nginx text eol=lf
+
+*.png binary
+*.jpg binary
+*.jpeg binary
+*.webp binary
+
+# The binaries of the relay are Python scripts; keep diffs readable end to end.
+*.py   diff=python
