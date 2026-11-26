@@ -46,10 +46,12 @@ REGISTER_ENV_FILE="${REGISTER_ENV_FILE:-/root/.cnb/register.env}"
 UPSTREAM_PORT="${UPSTREAM_PORT:-9001}"
 API="${CNB_API:-https://api.cnb.cool}"
 
+# Single log() definition; it must exist before the fail-fast block below.
+log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
+
 # Fail fast on incomplete configuration. An empty FIXED_URL would otherwise look
 # like an unhealthy probe, and an unauthenticated LIST failure must never be
 # mistaken for a dead workspace (it may trigger a stop).
-log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "${WATCHDOG_LOG:-/var/log/cnb-ai-watchdog.log}"; }
 _missing=""
 [ -n "$FIXED" ]        || _missing="$_missing FIXED_URL"
 [ -n "$REGISTER_URL" ] || _missing="$_missing REGISTER_URL"
@@ -77,8 +79,6 @@ LAST_START_FILE="$STATE_DIR/last_start"
 LAST_FAKEDEATH_FILE="$STATE_DIR/last_fakedeath"
 FAIL_TARGET_FILE="$STATE_DIR/failure_target"
 STATE_FILE="$STATE_DIR/state"
-
-log() { printf '[%s] %s\n' "$(date '+%F %T')" "$*" >> "$LOG"; }
 
 if [ -f "$LOG" ] && [ "$(stat -c%s "$LOG" 2>/dev/null || echo 0)" -gt 5242880 ]; then
   mv -f "$LOG" "$LOG.1" 2>/dev/null || true

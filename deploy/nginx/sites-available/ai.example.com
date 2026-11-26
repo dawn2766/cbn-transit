@@ -75,8 +75,6 @@ server {
         proxy_set_header Host $host;
         proxy_set_header Content-Type $content_type;
         proxy_set_header Authorization $http_authorization;
-        proxy_set_header X-Api-Key $http_x_api_key;
-        proxy_set_header Anthropic-Version $http_anthropic_version;
         proxy_set_header Accept $http_accept;
         proxy_set_header User-Agent $http_user_agent;
         # No buffering: responses are SSE streams.
