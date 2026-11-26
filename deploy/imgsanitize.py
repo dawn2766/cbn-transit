@@ -153,13 +153,6 @@ class _BodyReservation:
             raise BodyBufferLimit(CONF['body_buffer_bytes'] // 4)
         self.grow(source_size * 4)
 
-    def resize(self, target):
-        if target > self.size:
-            self.grow(target)
-        elif target < self.size:
-            self._buffers.release(self.size - target)
-            self.size = target
-
     def release(self):
         self._buffers.release(self.size)
         self.size = 0
@@ -195,7 +188,9 @@ def _probe(base):
             return False, None
         limit = doc.get('max_body_bytes')
         return True, limit if _valid_limit(limit) else None
-    except (OSError, ValueError, urllib.error.URLError):
+    # HTTPException covers a malformed status line / bad chunk framing, which
+    # urllib surfaces uncaught and would otherwise abort the request handler.
+    except (OSError, ValueError, urllib.error.URLError, HTTPException):
         return False, None
 
 
@@ -212,6 +207,14 @@ def body_limit(base):
         return _capability['limit']
 
 
+# A 413 payload can carry any max_body_bytes value, including one that is absurdly
+# small or was rewritten by an intermediate hop. Remembering it forever would make
+# every later request 413 until the workspace generation changes, so keep a floor
+# and let the cached value expire back to a fresh probe.
+_REMEMBERED_LIMIT_FLOOR = 1 * 1024 * 1024
+_REMEMBERED_LIMIT_TTL = 60.0
+
+
 def remember_limit(base, payload):
     try:
         doc = json.loads(payload)
@@ -220,7 +223,8 @@ def remember_limit(base, payload):
         return
     if _valid_limit(limit):
         with _cap_lock:
-            _capability.update(base=base, limit=limit, retry_at=0.0)
+            _capability.update(base=base, limit=max(limit, _REMEMBERED_LIMIT_FLOOR),
+                               retry_at=time.monotonic() + _REMEMBERED_LIMIT_TTL)
 
 
 def upstream_alive(base):
@@ -312,7 +316,9 @@ def prepare_client_body(body, reservation, limit):
     over = len(body) >= (min(limit, GATEWAY_BODY_BYTES) - WIRE_MARGIN_BYTES) // 6
     if not (image_check or over or (len(body) <= _FINGERPRINT_MAX_BYTES and body_has_fingerprint(body))):
         return body, 0, None
-    # Admit at most two preparations; all codec jobs also share a global cap.
+    # Codec work inside one request is already serial (reduce_images encodes one
+    # image at a time); this gate only bounds how many requests may prepare at
+    # once, because each holds a JSON copy plus codec scratch.
     if not _prepare_gate.acquire(blocking=False):
         raise BodyBufferBusy()
     try:
@@ -456,7 +462,12 @@ class _UpstreamPool:
         self._ttl = ttl
 
     def take(self, key):
-        """Remove and return the freshest idle connection for key, else None."""
+        """Remove and return an idle connection for key (oldest first), else None.
+
+        Oldest-first keeps the newest sockets in the pool, which are the ones
+        least likely to have been closed by the peer; a stale pick is retried on
+        a fresh connection by open_upstream().
+        """
         cutoff = time.monotonic() - self._ttl
         expired = []
         chosen = None
@@ -726,11 +737,15 @@ class Handler(BaseHTTPRequestHandler):
                 reservation.release()
 
     def _prepare_response(self, body, reservation, base, limit, headers):
+        """Prepare and forward one admitted body.
+
+        `limit` is the workspace's advertised upload capacity; it only bounds the
+        later tool-pairing repair. The JSON rewrite pass is bounded by the fixed
+        gateway wire budget instead, so the two limits stay independent.
+        """
         input_bytes = len(body)
         started = time.monotonic()
         try:
-            # The upstream's advertised cap is upload capacity; the gateway
-            # wire budget is a separate, fixed limit. Keep the two independent.
             body, neutralized, stats = prepare_client_body(body, reservation, GATEWAY_BODY_BYTES)
         except BodyBufferBusy:
             return 503, _dump({'error': {'message': 'relay request buffers or image processor are busy; retry shortly',
@@ -839,6 +854,10 @@ class Handler(BaseHTTPRequestHandler):
             {'Retry-After': '10', 'Cache-Control': 'no-store'})
 
     def _send(self, status, payload, content_type, headers=None):
+        # HEAD answers advertise the length a GET would return but must not write
+        # a body, so drop HEAD to a zero-length reply instead of a mismatched pair.
+        if self.command == 'HEAD':
+            payload = b''
         try:
             self.send_response(status)
             self.send_header('Content-Type', content_type)

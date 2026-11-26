@@ -12,12 +12,13 @@
 #   --email  EMAIL       if given, obtain/renew the certificate with certbot
 #   --port   PORT        workspace proxy port (default 9001)
 #   --skip-tls           do not touch certificates (use an existing pair)
-#   --yes                non-interactive
+#   --yes                non-interactive; also implied when stdin is not a terminal
 #
 # After a successful run:
 #   1. put REG_TOKEN in /root/.cnb/register.env  (printed below if newly generated)
 #   2. fill /etc/cnb-ai-watchdog.env from deploy/env/cnb-ai-watchdog.env.example
 #   3. add the same REG_TOKEN to the CNB secrets repo, set REGISTER_URL in .cnb.yml
+# ---------------------------------------------------------------------------
 set -euo pipefail
 
 SRC_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
@@ -34,10 +35,16 @@ while [ $# -gt 0 ]; do
     --port)   PORT="${2:?}"; shift 2 ;;
     --skip-tls) SKIP_TLS=1; shift ;;
     --yes|-y) ASSUME_YES=1; shift ;;
-    -h|--help) sed -n '2,22p' "$0"; exit 0 ;;
+    -h|--help) sed -n '2,/^# ---/p' "$0" | sed '$d'; exit 0 ;;
     *) echo "unknown option: $1" >&2; exit 2 ;;
   esac
 done
+
+# A non-interactive run (cron, `ssh host '...'`, CI) must never block on a prompt
+# and must never abort the install because `read` hit EOF under `set -e`.
+if [ ! -t 0 ]; then
+  ASSUME_YES=1
+fi
 
 if [ "$(id -u)" -ne 0 ]; then
   echo "must run as root (it installs systemd units and rewrites nginx config)" >&2
@@ -80,6 +87,19 @@ else
 fi
 install -m 755 "$SRC_DIR/deploy/cnb-register.py" /usr/local/bin/cnb-register.py
 install -m 644 "$SRC_DIR/deploy/systemd/cnb-register.service" /etc/systemd/system/
+# Pin the workspace port the register service health-probes. Written every run (and
+# removed when it is back to 9001) so a changed --port can never leave a stale
+# drop-in that probes the wrong port.
+DROPIN_DIR=/etc/systemd/system/cnb-register.service.d
+if [ "$PORT" != "9001" ]; then
+  install -d -m 755 "$DROPIN_DIR"
+  printf '[Service]\nEnvironment=UPSTREAM_PORT=%s\n' "$PORT" > "$DROPIN_DIR/port.conf"
+  chmod 644 "$DROPIN_DIR/port.conf"
+  echo "register service pinned to workspace port $PORT (systemd drop-in)"
+elif [ -f "$DROPIN_DIR/port.conf" ]; then
+  rm -f "$DROPIN_DIR/port.conf"
+  echo "removed the stale port drop-in (workspace port is back to 9001)"
+fi
 
 say "4/8 installing request relay service"
 install -m 644 "$SRC_DIR/deploy/systemd/cnb-imgsanitize.service" /etc/systemd/system/
@@ -98,7 +118,9 @@ install -m 644 "$SRC_DIR/deploy/nginx/conf.d/cnb-register-ratelimit.conf" /etc/n
 VHOST=/etc/nginx/sites-available/"$DOMAIN"
 if [ -f "$VHOST" ] && [ "$ASSUME_YES" -ne 1 ]; then
   echo "$VHOST already exists; overwrite it? [y/N]"
-  read -r answer
+  # `read` returns non-zero on EOF, which would abort the whole install under -e.
+  answer=""
+  read -r answer || true
   case "$answer" in y|Y) ;; *) echo "kept existing vhost"; VHOST_KEEP=1 ;; esac
 fi
 if [ "${VHOST_KEEP:-0}" -ne 1 ]; then
@@ -160,5 +182,8 @@ Installed. Remaining manual steps:
   * Verify from a client network:
       curl https://$DOMAIN/health
       ./smoke-test.sh    # BASE_URL=https://$DOMAIN PROXY_KEY=... ./smoke-test.sh
+
+  * After a certbot renewal, re-check that the vhost still contains the
+    resolver line and the upstream map variable, then: nginx -t && systemctl reload nginx
 ----------------------------------------------------------------
 EOF

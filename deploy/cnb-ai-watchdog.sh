@@ -15,7 +15,7 @@
 #      Stop/start uses a 30 min cooldown (state file last_fakedeath).
 # Concurrency is guarded with flock; state lives in /var/lib/cnb-ai-watchdog.
 #
-# Config: /etc/cnb-ai-watchdog.env (chmod 600; see docs/DEPLOY.md)
+# Config: /etc/cnb-ai-watchdog.env (chmod 600; see docs/DEPLOYMENT.md)
 # Log:    /var/log/cnb-ai-watchdog.log (rotated at 5 MiB -> .1)
 #
 set -uo pipefail

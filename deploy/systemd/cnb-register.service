@@ -6,6 +6,11 @@ After=network.target
 ExecStart=/usr/bin/python3 /usr/local/bin/cnb-register.py
 Restart=always
 RestartSec=3
+# Single-threaded HTTP server: a hung candidate probe must not keep a restart
+# waiting for the default 90s. The probe itself is bounded by
+# REGISTER_HEALTH_TIMEOUT (5s), so 30s is comfortably above a normal request.
+KillMode=mixed
+TimeoutStopSec=30
 
 [Install]
 WantedBy=multi-user.target

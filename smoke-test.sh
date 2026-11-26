@@ -70,13 +70,29 @@ else
 fi
 
 head_ "6. Anthropic format (optional; only if your client uses it)"
-c=$(code_of "$BASE_URL/v1/messages/count_tokens" -H "x-api-key: $PROXY_KEY" \
-      -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
-      -d '{"model":"'"${MODEL:-x}"'","messages":[{"role":"user","content":"hi"}]}')
+if [ -n "${MODEL:-}" ]; then
+  c=$(code_of "$BASE_URL/v1/messages/count_tokens" -H "x-api-key: $PROXY_KEY" \
+        -H 'anthropic-version: 2023-06-01' -H 'Content-Type: application/json' \
+        -d '{"model":"'"$MODEL"'","messages":[{"role":"user","content":"hi"}]}')
+  case "$c" in
+    200) ok "POST /v1/messages/count_tokens -> 200" ;;
+    401) bad "Anthropic path rejected the key -> 401" ;;
+    *)   warn "POST /v1/messages/count_tokens -> $c (may be unsupported upstream)" ;;
+  esac
+else
+  warn "skipped (no model id to send)"
+fi
+
+head_ "7. registration endpoint rejects a bad token without 5xx"
+# A bad token must be a clean 403 from cnb-register.py. A 502 here means the
+# handler crashed (e.g. on a non-ASCII header) instead of answering.
+c=$(code_of "$BASE_URL/ops/register" -X POST \
+      -H "X-Reg-Token: smoke-test-not-the-token" -H 'Content-Type: application/json' \
+      -d '{"uri":"https://aaaa00000000-9001.cnb.run"}')
 case "$c" in
-  200) ok "POST /v1/messages/count_tokens -> 200" ;;
-  401) bad "Anthropic path rejected the key -> 401" ;;
-  *)   warn "POST /v1/messages/count_tokens -> $c (may be unsupported upstream)" ;;
+  403) ok "POST /ops/register (bad token) -> 403" ;;
+  502|504) bad "POST /ops/register -> $c; the register service crashed or is down" ;;
+  *)   warn "POST /ops/register (bad token) -> $c (expected 403)" ;;
 esac
 
 rm -f /tmp/smoke.$$

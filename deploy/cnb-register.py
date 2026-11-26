@@ -2,7 +2,7 @@
 """Receive workspace registrations; validate a live candidate before switching nginx.
 
 The service is passive: start.sh / watchdog POST /register with X-Reg-Token.
-It listens on loopback; nginx exposes /ops/register. See docs/DEPLOY.md.
+It listens on loopback; nginx exposes /ops/register. See docs/DEPLOYMENT.md.
 """
 import hmac
 import json
@@ -139,8 +139,14 @@ class H(BaseHTTPRequestHandler):
         self.connection.settimeout(READ_TIMEOUT)
 
     def authorized(self):
-        token_hdr = self.headers.get('X-Reg-Token', '')
-        return bool(TOKEN and token_hdr and hmac.compare_digest(token_hdr, TOKEN))
+        # Compare bytes: hmac.compare_digest raises TypeError on a non-ASCII str,
+        # and a crafted header would then escape the handler and surface as a 502.
+        try:
+            return bool(TOKEN) and hmac.compare_digest(
+                self.headers.get('X-Reg-Token', '').encode('utf-8', 'replace'),
+                TOKEN.encode('utf-8'))
+        except (TypeError, ValueError):
+            return False
 
     def reply(self, status, result):
         payload = json.dumps(result).encode()

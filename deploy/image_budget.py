@@ -145,15 +145,44 @@ class _ImagePart:
         else:
             self.part['image_url'] = url
 
-    def omit(self):
+    def omit(self, reason='budget'):
+        """Replace the image with a placeholder text part.
+
+        `budget` means the image was dropped to fit the gateway budget; other
+        reasons describe an image the relay could not process at all. The
+        placeholder is deliberately short: omitting a small image must not make
+        the serialized body larger than the original.
+        """
+        if reason == 'budget':
+            text = '[image omitted to fit the request image budget; relay image #%d]' % self.ordinal
+        else:
+            text = '[image #%d dropped: %s; ask the user to attach it again if needed]' % (
+                self.ordinal, reason)
+        self._saved = dict(self.part)
         self.part.clear()
-        self.part.update(type='text', text=(
-            '[image omitted to fit request image limits; relay image #%d. '
-            'No local normalized image path is available; ask the user to attach it again if needed.]'
-            % self.ordinal))
+        self.part.update(type='text', text=text)
         self.removed = True
         self.url = ''
         self.encoded_bytes = self.raw_bytes = 0
+
+    def restore(self, serializer):
+        """Undo an omit that would not have shrunk the body; restore the measure."""
+        saved = getattr(self, '_saved', None)
+        if saved is None:
+            return
+        self.part.clear()
+        self.part.update(saved)
+        self._saved = None
+        self.removed = False
+        # Re-derive the string fields the reduce pass tracks.
+        value = self.part.get('image_url')
+        url = value.get('url') if isinstance(value, dict) else value
+        self.url = url if isinstance(url, str) else ''
+        self.offset = (self.url.index(',') + 1) if self.url.startswith('data:image/') else 0
+        self.encoded_bytes = len(self.url) - self.offset if self.offset else 0
+        self.raw_bytes = (self.encoded_bytes // 4 * 3 - (len(self.url) - len(self.url.rstrip('=')))
+                          if self.offset else 0)
+        self.json_bytes = len(serializer(self.part)) + self.json_url_bytes
 
     def replace(self, data, media_type):
         url = 'data:%s;base64,%s' % (media_type, base64.b64encode(data).decode('ascii'))
@@ -394,14 +423,26 @@ def reduce_images(doc, body, reservation, limit=GATEWAY_BODY_BYTES, mutated=Fals
     measured, serializer = _measure(doc, images)
     changed = mutated
 
-    def omit(image):
+    def omit(image, reason='budget', force=False):
+        """Swap the image for a text placeholder and update the running measure.
+
+        A soft omit is refused when the placeholder would not actually shrink the
+        serialized body: dropping an image must never make a request bigger than
+        the one it replaced. Hard guards (image count, total bytes, a pixel bomb)
+        pass force=True because their limit has to be honoured regardless.
+        """
         nonlocal changed, measured
         old_bytes = image.json_bytes
-        image.omit()
-        image.json_bytes = len(serializer(image.part))
-        measured += image.json_bytes - old_bytes
+        image.omit(reason)
+        new_bytes = len(serializer(image.part))
+        if not force and new_bytes >= old_bytes:
+            image.restore(serializer)
+            return False
+        image.json_bytes = new_bytes
+        measured += new_bytes - old_bytes
         stats['removed'] += 1
         changed = True
+        return True
 
     count_remove = max(0, len(images) - MAX_IMAGES)
     excess = max(0, sum(image.encoded_bytes for image in images) - MAX_IMAGE_BASE64_BYTES)
@@ -410,21 +451,20 @@ def reduce_images(doc, body, reservation, limit=GATEWAY_BODY_BYTES, mutated=Fals
         if index >= count_remove and removed_bytes >= excess:
             break
         removed_bytes += image.encoded_bytes
-        omit(image)
+        omit(image, force=True)
 
     retained = len(images) - stats['removed']
     for image in images:
         if measured < ceiling or retained <= PRESERVE_IMAGES:
             break
-        if not image.removed:
-            omit(image)
+        if not image.removed and omit(image):
             retained -= 1
 
     for image in images:
         if not image.removed and image.offset:
             size = image.dimensions()
             if size and size[0] * size[1] > MAX_SOURCE_PIXELS:
-                omit(image)
+                omit(image, 'source exceeds the pixel limit', force=True)
 
     inline = [image for image in images if not image.removed and image.offset]
     # No codec can help when non-image fields alone exceed the ceiling.
@@ -448,7 +488,9 @@ def reduce_images(doc, body, reservation, limit=GATEWAY_BODY_BYTES, mutated=Fals
             continue
         result = encode(job)
         if result is None:
-            omit(image)
+            # The relay could not decode/encode it (unsupported format, corrupt
+            # bytes, or not enough reserve). Say so instead of blaming the budget.
+            omit(image, 'unsupported or undecodable image format')
             continue
         data, media_type = result
         # An image whose header could not be read is kept whatever its size: the
@@ -470,6 +512,14 @@ def reduce_images(doc, body, reservation, limit=GATEWAY_BODY_BYTES, mutated=Fals
         if not image.removed:
             omit(image)
     if measured >= ceiling:
+        # Remote (non-data-URL) images cannot be downloaded, resized or dropped by
+        # the relay, so name the real obstacle rather than telling the client to
+        # "reduce/compress images" that were never compressible here.
+        remote = any(not image.removed and not image.offset for image in images)
+        if remote:
+            raise RequestImageLimit(
+                'request remains too large; remote URL images cannot be resized by the relay. '
+                'Attach the images inline (base64) or shorten the conversation', limit)
         raise RequestImageLimit(
             'request remains too large after image reduction; text, tool schemas or '
             'other non-removable content exceeds the gateway budget; compact the conversation', limit)

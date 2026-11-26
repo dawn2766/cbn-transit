@@ -119,7 +119,7 @@ git clone https://github.com/dawn2766/cbn-transit.git && cd cbn-transit
 sudo ./install.sh --domain ai.example.com --email you@example.com
 ```
 
-装代码 → 生成并打印 `REG_TOKEN`（**立刻抄进秘钥仓库**）→ 装两个 systemd 服务 → 按域名渲染 nginx vhost → 申请证书 → 启动并自检。幂等，可重复执行。
+装代码 → 生成并打印 `REG_TOKEN`（**立刻抄进秘钥仓库**）→ 装两个 systemd 服务 → 按域名渲染 nginx vhost → 申请证书 → 启动并自检。幂等，可重复执行。工作区代理不在默认端口时加 `--port`，它会写进 `cnb-register` 的 systemd drop-in。
 
 <details>
 <summary>手动步骤</summary>
@@ -149,7 +149,7 @@ sudo nginx -t && sudo systemctl reload nginx
 
 </details>
 
-vhost 里四处不能省：`resolver`（`proxy_pass` 用变量，否则全 502）、`proxy_ssl_server_name on`、`proxy_buffering off`（否则流式卡住）、`client_max_body_size 8m`。同时 `/v1/chat/completions` 必须指向 `cnb_imgsanitize`，否则图片预算与指纹中和全部失效。
+vhost 里四处不能省：`resolver`（`proxy_pass` 用变量，否则全 502）、`proxy_ssl_server_name on`、`proxy_buffering off`（否则流式卡住）、`client_max_body_size 0` 与 `proxy_request_buffering off`（准入交给中继与工作区的 JSON 413/503，nginx 不要抢先回 HTML 413、也不要把上传落到磁盘）。同时 `/v1/chat/completions` 必须指向 `cnb_imgsanitize` 并把 502/504 转成可重试 503，否则图片预算与指纹中和全部失效。
 
 看门狗（建议开启）：
 
@@ -159,6 +159,9 @@ sudo chmod 600 /etc/cnb-ai-watchdog.env      # 填写 CNB_REPO / FIXED_URL / REG
 sudo install -m 755 deploy/cnb-ai-watchdog.sh /usr/local/bin/
 echo '* * * * * /usr/local/bin/cnb-ai-watchdog.sh >/dev/null 2>&1' | sudo crontab -
 ```
+
+部署前的判断项、密钥隔离与轮换顺序、证书续期会静默改坏 vhost 的坑，
+见 [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ## 客户端接入
 
@@ -190,7 +193,7 @@ BASE_URL=https://<域名> PROXY_KEY=sk-... ./smoke-test.sh
 | `/ops/register` → 403 | 两处 `REG_TOKEN` 不一致 |
 | 冻结域名 401/302 跳登录页 | `map` 指向旧子域名，手动重注册或等 cron |
 | 502 + `no resolver defined` | vhost 丢了 `resolver`（常见于 certbot 续期改写） |
-| HTML 413 | `client_max_body_size` 太小 |
+| HTML 413 | 有别的 nginx 层加了 `client_max_body_size`；本仓库 vhost 是 `0` |
 | `413 … limit 10.00MB` | 网关硬上限，减少图片或压缩历史 |
 | 流式一次性返回 | `proxy_buffering` 未关 |
 
@@ -205,7 +208,9 @@ curl -X POST https://<域名>/ops/register -H "X-Reg-Token: <REG_TOKEN>" \
 
 证书续期后务必复查 vhost 仍含 `resolver` 与 `$cnb_ai_upstream`，再 `nginx -t`。
 
-更细的逐层排查与紧急处置见 [docs/OPERATIONS.md](docs/OPERATIONS.md)。
+更细的逐层排查与紧急处置见 [docs/OPERATIONS.md](docs/OPERATIONS.md)；部署前的
+判断、密钥隔离与轮换顺序、证书续期会毁掉 vhost 这类静默坑，见
+[docs/DEPLOYMENT.md](docs/DEPLOYMENT.md)。
 
 ## 仓库结构
 
@@ -217,7 +222,9 @@ deploy/image_budget.py  图片预算
 deploy/cnb-register.py  自注册接收
 deploy/cnb-ai-watchdog.sh  恢复控制器
 deploy/{systemd,nginx,env}/  部署模板
+tests/                  离线回归（无需凭据，全合成数据）
 docs/OPERATIONS.md      排障手册
+docs/DEPLOYMENT.md      部署判断与密钥轮换
 ```
 
 ## 许可
